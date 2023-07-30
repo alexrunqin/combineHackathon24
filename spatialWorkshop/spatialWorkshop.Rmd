@@ -1,0 +1,121 @@
+---
+title: "MS Figures"
+author: "Farhan Ameen"
+date: "`r Sys.Date()`"
+output:
+  html_document: 
+    toc: true
+    code_folding: hide
+    self_contained: yes
+    theme: spacelab
+---
+
+
+
+```{r setup, include=FALSE, eval=TRUE}
+knitr::opts_chunk$set(cache = TRUE, message = FALSE, warning = FALSE)
+
+```
+
+
+```{r libraries}
+
+library(tidyverse)
+library(Statial)
+library(spicyR)
+
+theme_set(theme_classic())
+
+```
+
+
+
+# Data cleaning 
+
+
+```{r cleaningData}
+load("../data/kerenSCE.rda")
+
+
+# Removing patients with cold tumour due to small sample size of 5
+kerenSCE = kerenSCE[, kerenSCE$tumour_type != "cold"]
+kerenSCE$tumour_type = droplevels(kerenSCE$tumour_type)
+
+# Removing patients 22 and 38 because they have missing survival data.
+kerenSCE = kerenSCE[, !kerenSCE$imageID %in% c("22", "38")]
+kerenSCE$imageID = as.numeric(kerenSCE$imageID)
+
+
+# Extracting clinical information
+clinicalDf = kerenSCE |> 
+  colData() |> 
+  data.frame() |> 
+  select(-c(x, y, CellID, cellType, cellSize, C, tumorYN, tumorCluster, Group, immuneCluster, immuneGroup, region)) |> 
+  unique() |> 
+  remove_rownames()
+```
+
+
+# Examining images
+
+```{r exampleImages}
+kerenSCE |> 
+  colData() |> 
+  data.frame() |> 
+  filter(imageID == "3") |> 
+  ggplot(aes(x = x, y = y, col = cellType)) +
+  geom_point()
+```
+
+# Calculating cell proportions
+
+```{r}
+cellProp = spicyR::getProp(
+  cells = kerenSCE
+)
+
+head(cellProp)
+```
+
+```{r}
+testProp = spicyR::colTest(kerenSCE,
+                condition = "tumour_type",
+                feature = "cellType")
+
+DT::datatable(testProp)
+```
+
+```{r}
+cellProp |> 
+  rownames_to_column("imageID") |> 
+  mutate(imageID = as.numeric(imageID)) |> 
+  left_join(clinicalDf) |> 
+  ggplot(aes(x = tumour_type, y = `Keratin+Tumour`)) +
+  geom_boxplot() +
+  labs(y = "Proprotion of Keretin+Tumour cells",
+       x = "Tumour Type")
+  
+```
+
+# Region analysis
+
+```{r}
+set.seed(101) 
+
+kerenSCE <- lisaClust(
+  kerenSCE,
+  k = 5,
+  Rs = 50,
+  spatialCoords = c("x", "y"),
+  cellType = "cellType"
+)
+
+regionMap(kerenSCE,
+          cellType = "cellType")
+```
+
+## Visualising regions
+```{r}
+
+```
+
