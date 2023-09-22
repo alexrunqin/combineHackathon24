@@ -24,11 +24,35 @@ library(tidyverse)
 library(SingleCellExperiment)
 library(Statial)
 library(spicyR)
-
+library(plotly)
+library(ClassifyR)
+library(lisaClust)
+library(ggsurvfit)
+library(ggthemes)
+library(DT)
+library(htmlwidgets)
+library(ggthemes)
 
 # Set ggplot theme
 theme_set(theme_classic())
 
+```
+
+
+# Loading datasets
+
+Dataset 1 - [Keren et al](https://pubmed.ncbi.nlm.nih.gov/30193111/)
+
+Dataset 2 - [Ali et al](https://www.nature.com/articles/s43018-020-0026-6)
+
+
+The next sections will look at Keren et al.
+```{r data, cache = FALSE}
+load("../data/kerenSCE.rda")
+#load("../data/aliSCE.rda")
+
+
+kerenSCE
 ```
 
 
@@ -37,8 +61,6 @@ theme_set(theme_classic())
 
 
 ```{r cleaningData}
-load("../data/kerenSCE.rda")
-
 
 # Removing patients with cold tumour due to small sample size of 5
 kerenSCE = kerenSCE[, kerenSCE$tumour_type != "cold"]
@@ -56,39 +78,69 @@ clinicalDf = kerenSCE |>
   select(-c(x, y, CellID, cellType, cellSize, C, tumorYN, tumorCluster, Group, immuneCluster, immuneGroup, region)) |> 
   unique() |> 
   remove_rownames()
+
+```
+
+# Data visualisation{.tabset}
+
+## Dimension reduction plot
+```{r UMAP}
+set.seed(51773)
+kerenSCE <- scater::runUMAP(kerenSCE, exprs_values = "intensities", name = "UMAP")
+
+scater::plotReducedDim(kerenSCE, dimred = "UMAP", colour_by = "cellType")
 ```
 
 
-# Examining images
+## Example image
 
-```{r exampleImages}
-kerenSCE |> 
+
+```{r exampleImage}
+p = kerenSCE |> 
   colData() |> 
   data.frame() |> 
-  filter(imageID == "3") |> 
+  filter(imageID == "5") |> 
   ggplot(aes(x = x, y = y, col = cellType)) +
-  geom_point()
+  geom_point(size = 1) +
+  ggthemes::scale_colour_tableau( palette = "Tableau 20")
+
+
+ggplotly(p)
 ```
 
 # Calculating cell proportions
 
-```{r}
+
+
+## Proportions
+
+```{r cellProp}
 cellProp = spicyR::getProp(
   cells = kerenSCE
 )
 
-head(cellProp)
+cellProp |> 
+  round(4) |> 
+  DT::datatable(options = list(scrollX = TRUE))
 ```
 
-```{r}
+
+## Proportions across conditions
+
+
+```{r testProp}
 testProp = spicyR::colTest(kerenSCE,
                 condition = "tumour_type",
                 feature = "cellType")
 
-DT::datatable(testProp)
+testProp |> 
+  DT::datatable(options = list(scrollX = TRUE))
+
 ```
 
-```{r}
+
+
+```{r propBoxplot}
 cellProp |> 
   rownames_to_column("imageID") |> 
   mutate(imageID = as.numeric(imageID)) |> 
@@ -102,13 +154,12 @@ cellProp |>
 
 # Region analysis
 
-```{r}
-set.seed(101) 
+```{r region}
+set.seed(51773)
 
 kerenSCE <- lisaClust(
   kerenSCE,
   k = 5,
-  Rs = 50,
   spatialCoords = c("x", "y"),
   cellType = "cellType"
 )
@@ -117,8 +168,112 @@ regionMap(kerenSCE,
           cellType = "cellType")
 ```
 
-## Visualising regions
-```{r}
 
+```{r viewRegion}
+hatchingPlot(
+  kerenSCE,
+  useImages = "5",
+  cellType = "cellType",
+  spatialCoords = c("x", "y"),
+  line.spacing = 41, # spacing of lines
+  nbp = 100 # smoothness of lines
+)
+
+
+```
+
+# Spatial interactions
+
+A positive value means the two cell types are localised, a negative value means they are dispered.
+
+```{r pairwise}
+interactions = spicyR::getPairwise(
+  cells = kerenSCE,
+) |> 
+  data.frame()
+
+interactions |> 
+  round(4) |> 
+  DT::datatable( options = list(scrollX = TRUE))
+```
+
+## Check which spatial interactions are associated with survival
+
+The interaction between Keratin+Tumour cells and other immune cells are the most significant spatial relationship which contributes to patient survival.
+
+The CoxPH coefficient is negative, which means when Keratin+Tumour and other immune cells are localising, the patient tends to live longer.
+
+```{r colCox}
+# Create survival object from data 
+survivalOutcomes = Surv(clinicalDf$`Survival_days_capped.`, clinicalDf$Censored)
+
+# Fit CoxPh models on all cell relationships.
+ClassifyR::colCoxTests(interactions, survivalOutcomes) |> 
+  arrange(p.value) |> 
+  round(4) |> 
+  DT::datatable( options = list(scrollX = TRUE))
+
+```
+
+```{r survCurve}
+# Selecting the most significant relationship
+relationship = interactions$Keratin.Tumour__other.immune
+
+# Splitting the values by median relationship
+relationship = ifelse(relationship > median(relationship), "Attraction", "Avoidance")
+    
+# Plotting Kaplan-Meier curve
+survfit2(survivalOutcomes ~ relationship) |>
+    ggsurvfit() +
+    add_pvalue() +
+    ggtitle("Keratin+Tumour__Other immune")
+```
+
+# Classification
+
+
+```{r classification}
+# Calculate proportions of regions in each image
+regionProp <- spicyR::getProp(kerenSCE, 
+                       feature = "region",
+                       imageID = "imageID")
+
+# Get the average expression of a marker in each cell type in each region
+cellTypeRegionMeans <- Statial::getMarkerMeans(kerenSCE,
+                              imageID = "imageID",
+                              cellType = "cellType",
+                              region = "region")
+
+# Group all features in one vector
+featureList = list(
+  "Cell type proportions" = cellProp,
+  "Region proportions" = regionProp,
+  "Marker means" = cellTypeRegionMeans,
+  "Spatial interactions" = interactions
+)
+
+
+
+# Training a CoxNet survival model 
+CV = ClassifyR::crossValidate(
+  measurements = featureList,
+  outcome = survivalOutcomes,
+  classifier = "CoxNet",
+  selectionMethod = "CoxPH",
+  nFolds = 5,
+  nFeatures = 10,
+  nRepeats = 20
+)
+```
+
+
+
+```{r classificationPlot}
+ClassifyR::performancePlot(CV, metric = "C-index",
+                characteristicsList = list(x = "auto", fillColour = "Assay Name")) +
+  theme(legend.position = "none") +
+  scale_x_discrete(guide = guide_axis(angle = 45)) +
+  theme(axis.text.x = element_text(size = 7)) +
+  scale_fill_tableau()
 ```
 
