@@ -13,13 +13,12 @@ output:
 
 
 ```{r setup, include=FALSE, eval=TRUE}
-knitr::opts_chunk$set(cache = TRUE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(cache = TRUE, message = FALSE, warning = FALSE, fig.height = 7, fig.width = 9)
 
 ```
 
 
 ```{r libraries}
-
 library(tidyverse)
 library(SingleCellExperiment)
 library(Statial)
@@ -47,7 +46,7 @@ Dataset 2 - [Ali et al](https://www.nature.com/articles/s43018-020-0026-6)
 
 
 The next sections will look at Keren et al.
-```{r data, cache = FALSE}
+```{r data}
 load("../data/kerenSCE.rda")
 #load("../data/aliSCE.rda")
 
@@ -108,7 +107,7 @@ p = kerenSCE |>
 ggplotly(p)
 ```
 
-# Calculating cell proportions
+# Calculating cell proportions{.tabset}
 
 
 
@@ -125,7 +124,7 @@ cellProp |>
 ```
 
 
-## Proportions across conditions
+## Testing across conditions
 
 
 ```{r testProp}
@@ -164,13 +163,14 @@ kerenSCE <- lisaClust(
   cellType = "cellType"
 )
 
-regionMap(kerenSCE,
-          cellType = "cellType")
 ```
 
+## Visualising regions{.tabset}
 
-```{r viewRegion}
-hatchingPlot(
+### Hatching plot
+
+```{r viewRegion, fig.height= 8, fig.width=10}
+p = hatchingPlot(
   kerenSCE,
   useImages = "5",
   cellType = "cellType",
@@ -179,12 +179,33 @@ hatchingPlot(
   nbp = 100 # smoothness of lines
 )
 
-
+p +
+  ggthemes::scale_colour_tableau( palette = "Tableau 20") +
+  guides(fill=guide_legend(ncol=2))
 ```
+
+### Coloured regions
+```{r colourRegion}
+kerenSCE |> 
+  colData() |> 
+  data.frame() |> 
+  filter(imageID == "5") |> 
+  ggplot(aes(x = x, y = y, col = region)) +
+  geom_point() +
+  ggthemes::scale_colour_tableau() +
+  theme_classic()
+```
+
+### Region composition
+```{r}
+regionMap(kerenSCE,
+          cellType = "cellType")
+```
+
 
 # Spatial interactions
 
-A positive value means the two cell types are localised, a negative value means they are dispered.
+A positive value means the two cell types are localised, a negative value means they are dispersed.
 
 ```{r pairwise}
 interactions = spicyR::getPairwise(
@@ -196,6 +217,26 @@ interactions |>
   round(4) |> 
   DT::datatable( options = list(scrollX = TRUE))
 ```
+
+
+
+```{r spatialImage, fig.height=8, fig.width=10}
+p = kerenSCE |> 
+  colData() |> 
+  data.frame() |> 
+  filter(imageID == "3") |> 
+  ggplot(aes(x = x, y = y, col = cellType)) +
+  geom_point(size = 1) +
+  ggthemes::scale_colour_tableau( palette = "Tableau 20") +
+  theme_classic() +
+  ggtitle("Image 3")
+
+
+ggplotly(p)
+```
+
+
+
 
 ## Check which spatial interactions are associated with survival
 
@@ -264,6 +305,7 @@ CV = ClassifyR::crossValidate(
   nFeatures = 10,
   nRepeats = 20
 )
+
 ```
 
 
