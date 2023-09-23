@@ -275,9 +275,20 @@ survfit2(survivalOutcomes ~ relationship) |>
 
 ```{r classification}
 # Calculate proportions of regions in each image
-regionProp <- spicyR::getProp(kerenSCE, 
+regionProp <- spicyR::getProp(aliSCE, 
                        feature = "region",
                        imageID = "imageID")
+feature <- "region"
+imageID <- "image_number"
+cellType <- "cellType"
+
+df <- as.data.frame(SummarizedExperiment::colData(aliSCE))[, c(imageID, feature, cellType)]
+
+
+tab <- table(df[, imageID], df[, feature], df[, cellType])
+tab <- sweep(tab, 1, rowSums(tab), "/")
+tab <- as.data.frame(tab)
+
 
 # Get the average expression of a marker in each cell type in each region
 cellTypeRegionMeans <- Statial::getMarkerMeans(kerenSCE,
