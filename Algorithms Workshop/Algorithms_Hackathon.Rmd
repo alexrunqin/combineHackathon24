@@ -1,0 +1,397 @@
+---
+title: "COMBINE X SUDATA X SPDSC X GraftAI Hackathon"
+author: "Alex Qin"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    embed-resources: true
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: show
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+
+chooseCRANmirror(graphics=FALSE, ind=1)
+```
+
+Welcome to the algorithms stream of the hackathon! In this introductory
+pipeline, we'll cover:
+
+-   Introduction to bulk transcriptomics data
+
+-   A beginners guide to building a model
+
+-   Visualizing results
+
+This workflow will be directly obtaining and using the data from the 
+[PROMAD](https://shiny.maths.usyd.edu.au/PROMAD/) database, containing
+transplant transcriptomic data from a set of different studies. These
+studies can usually be traced back to their original paper by typing in their
+GSE accession ID (e.g. `GSE46474`) into google. This can be an avenue for 
+analysis of more in-depth questions. 
+
+All data downloaded from PROMAD will be neatly stored as dataframes in a
+`.Rds` format, allowing you to easily read it into R using the `readRDS()`
+function. When downloading multiple datasets, each of these will be stored
+as a dataframe in a list of dataframes.
+
+# Getting started {.tabset .tabset-fade}
+
+## Collecting Data
+
+The first step in building any good model is to actually make the model.
+To start things off, we'll be using a randomForest model. There are plenty of different models that you can use, (SVM, randomForest, logisticRegression, etc.), we'll start things off nice and simple. 
+
+The first step in analyzing bulk transcriptomics data is to collect the
+data. The `limma` package will be used for the analysis of transcriptomic data.
+Here, we use the `readRDS()` function to read in the file. The file will be 
+stored as a list consisting of 1 dataframe, as we've only specified 1 dataset
+from the PROMAD database.
+
+```{r, message = FALSE, warning = FALSE}
+# Load in the libraries 
+library(limma)
+library(dplyr)
+library(ggplot2)
+library(randomForest)
+
+# Loading in data
+gse <- readRDS("microarray.Rds")
+
+# Loading in the first (and only) dataframe of our list
+gse <- gse[[1]]
+```
+
+## Objects in R
+
+After loading the dataset in as a dataframe, we can inspect it.
+
+```{r, message = FALSE, warning = FALSE}
+# Take a look at the data
+dplyr::glimpse(gse)
+```
+
+We can see that the data consists of 23,521 rows and 42 columns. Each row
+represents a gene (our features) and each column represents a patient (our 
+samples). We can see that this is a balanced dataset, with 20 control patients
+and 19 AR (acute rejection) patients, where the outcome is indicated of the
+patient is indicated by the column name. 
+
+# Microarray {.tabset .tabset-fade}
+
+To be entirely accurate, the dataset that we just loaded in, `GSE46474`, is
+not strictly a RNA sequencing dataset. It is a microarray dataset.
+Microarray technology was the first high-throughput technology used to
+measure gene expression. Microarray data is a bit different from RNAseq
+data, in that it is a array based technology, where the expression of a
+gene is measured by the intensity of a spot on a microarray chip. This
+is in contrast to RNAseq, where the expression of a gene is measured by
+the number of reads that map to that gene.\n
+
+As such the analysis of microarray data is a bit different from RNAseq
+data. In this section, we will cover how to analyse microarray data.
+
+## Introduction
+
+You will notice in our dataframe that we have 2 columns that look likes genes.
+Column `X` and `Gene_Symbol`. You will notice that `X` sometimes has 2 gene 
+names. This is because some probe IDs map to multiple genes because the probe is
+designed to bind to a region of the gene that is common to multiple
+genes. This is a common issue with microarray data. `Gene_Symbol` has simply 
+taken the first element.
+
+```{r}
+head(gse$X)
+head(gse$Gene_Symbol)
+```
+Next, we'll want to remove the `X` column and set `Gene_Symbol` as our rownames.
+However, often times we'll get duplicated or missing gene names in our dataset.
+This can happen for a range of reasons, and you can decide to examine these 
+further, but for the sake of brevity, we'll be simply filtering these genes out. 
+
+```{r}
+gse$X <- NULL
+
+idx = which(!is.na(gse$Gene_Symbol) & !duplicated(gse$Gene_Symbol))
+gse = gse[idx, ]
+
+# Now we can set the gene symbols as the rownames
+rownames(gse) = gse$Gene_Symbol
+
+gse$Gene_Symbol <- NULL
+```
+
+## Normalization & PCA
+
+Normalization is the process of removing technical variation from the
+data. We can first assess whether the data needs to be normalized by
+looking at the distribution of the data. We can do this by plotting a
+boxplot of the data.
+
+```{r}
+boxplot(gse)
+```
+
+As we can see the data is already normalized and so we don't need to
+normalize it once again. All data in PROMAD is already normalized.
+
+Now that we have normalized the data, we can perform a principal componenet analysis (PCA) to visualize the data. PCA is a dimensionality reduction technique that reduces the dimensionality of the data while preserving the variance of the data. We can use the `prcomp` function to perform PCA.
+
+```{r}
+pca = prcomp(t(gse), scale=TRUE, centre = TRUE)
+rejection = grepl("AR", colnames(gse)) # grepl is a function that searches for a pattern in a string
+patient_class = ifelse(rejection, "AR", "Control") # ifelse is a function that assigns a value based on a condition
+pca$x %>%
+  as.data.frame() %>%
+  mutate(patient_class) %>%
+  ggplot(aes(x = PC1, y = PC2, color = patient_class)) + geom_point(size = 5) + theme_bw()
+```
+
+
+## Differential Expression Analysis
+
+In order to identify genes that are differentially expressed between two
+groups, we can use the `limma` package. The `limma` package uses a
+linear model to identify differentially expressed genes. The `limma`
+package takes in a `ExpressionSet` object and a design matrix as input.
+
+To create the design matrix we can use the `model.matrix` function. The
+design matrix is a matrix that describes the experimental design of the
+study. Each column of the design matrix corresponds to a group in the
+study. The `model.matrix` function takes in a formula and a data frame
+as input. The formula describes the experimental design of the study.
+The data frame contains the sample information.
+
+First, we'll need to obtain the class labels from the column names.
+
+```{r}
+# Clean up the class labels
+rejection = grepl("AR", colnames(gse)) # grepl is a function that searches for a pattern in a string
+patient_class = ifelse(rejection, "AR", "Control") # ifelse is a function that assigns a value based on a condition
+
+table(patient_class)
+```
+
+Now that we have the class labels, we can create the design matrix.
+
+```{r}
+# Create the design matrix
+design = model.matrix(~0 + patient_class)
+colnames(design) = c("AR", "Control")
+
+# Fit the linear model
+fit = lmFit(gse, design) # lmFit is a function that fits a linear model to the data
+contrast = makeContrasts(Rejection = AR - Control, levels=design) # makeContrasts is a function that creates a contrast matrix to specify the comparison we want to make in our analysis.
+fit2 = contrasts.fit(fit, contrast) # contrasts.fit is a function that fits the contrast matrix to the linear model
+efit = eBayes(fit2, robust=TRUE) # eBayes is a function that estimates the variance of the data given we have a lot of features.
+```
+
+Finally, we can extract the differentially expressed genes using the
+`topTable` function. This function takes in the `eBayes` object and a
+threshold as input.
+
+```{r}
+topTable = topTable(efit, coef="Rejection", number=Inf)
+
+library(DT)
+topTable %>%
+  round(3) %>%
+  top_n(10, abs(t)) %>%
+  datatable() 
+```
+
+```{r}
+X = as.matrix(t(gse))
+y = as.factor(patient_class)
+
+cvK = 5  # number of CV folds
+cv_50acc5_knn = cv_50acc5_svm = cv_50acc5_rf = c()
+cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+
+n_sim = 25 ## number of repeats
+for (i in 1:n_sim) {
+
+  cvSets = cvTools::cvFolds(nrow(X), cvK)  # permute all the data, into 5 folds
+  cv_acc_knn = cv_acc_svm = cv_acc_rf = c()
+  
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_test = X[test_id, ]
+    X_train = X[-test_id, ]
+    y_test = y[test_id]
+    y_train = y[-test_id]
+    
+    ## KNN
+    fit5 = class::knn(train = X_train, test = X_test, cl = y_train, k = 5)
+    cv_acc_knn[j] = mean(fit5 == y_test)
+    
+    ## SVM
+    svm_res <- e1071::svm(x = X_train, y = as.factor(y_train))
+    fit <- predict(svm_res, X_test)
+    cv_acc_svm[j] = mean(fit == y_test)
+
+    ## RandomForest
+    rf_res <- randomForest::randomForest(x = X_train, y = as.factor(y_train))
+    fit <- predict(rf_res, X_test)
+    cv_acc_rf[j] = mean(fit == y_test)
+  }
+  cv_50acc5_knn <- append(cv_50acc5_knn, mean(cv_acc_knn))
+  cv_50acc5_svm <- append(cv_50acc5_svm, mean(cv_acc_svm))
+  cv_50acc5_rf <- append(cv_50acc5_rf, mean(cv_acc_rf))
+} ## end for
+```
+
+
+```{r}
+boxplot(list(SVM = cv_50acc5_svm, KNN = cv_50acc5_knn , RF= cv_50acc5_rf ), ylab="CV Accuracy")
+```
+
+Now we want to apply the models we just built onto our test dataset.
+
+```{r}
+X = as.matrix(t(gse))
+y = as.factor(patient_class)
+
+cvK = 5
+n_sim = 20 
+
+cv_accuracy10 = cv_accuracy50 = cv_accuracy100 = numeric(n_sim)
+
+for (i in 1:n_sim) {
+  cvSets = cvTools::cvFolds(nrow(X), cvK) 
+  cv_accuracy_folds10 = cv_accuracy_folds50 = cv_accuracy_folds100 = numeric(cvK)
+
+  for (j in 1:cvK) {
+    test_id = cvSets$subsets[cvSets$which == j]
+    X_train = X[-test_id,]
+    X_test = X[test_id,]
+    y_train = y[-test_id]
+    y_test = y[test_id]
+    
+    design = model.matrix(~y_train)
+    # colnames(design) = c("AR", "Control")
+    
+    fit <- lmFit(t(X_train), design)
+    fit <- eBayes(fit)
+    top <- topTable(fit, n = 100)
+    
+    DE_genes10 <- rownames(top)[1:10]
+    DE_genes50 <- rownames(top)[1:50]
+    DE_genes100 <- rownames(top)[1:100]
+    
+    X_train10 = X_train[,DE_genes10]
+    X_test10 = X_test[,DE_genes10]
+    rf_fit10 = randomForest(x = X_train10, y = y_train)
+    predictions10 = predict(rf_fit10, X_test10)
+    cv_accuracy_folds10[j] = mean(y_test == predictions10)
+    
+    X_train50 = X_train[,DE_genes50]
+    X_test50 = X_test[,DE_genes50]
+    rf_fit50 = randomForest(x = X_train50, y = y_train)
+    predictions50 = predict(rf_fit50, X_test50)
+    cv_accuracy_folds50[j] = mean(y_test == predictions50)
+    
+    X_train100 = X_train[,DE_genes100]
+    X_test100 = X_test[,DE_genes100]
+    rf_fit100 = randomForest(x = X_train100, y = y_train)
+    predictions100 = predict(rf_fit100, X_test100)
+    cv_accuracy_folds100[j] = mean(y_test == predictions100)
+    
+  }
+  cv_accuracy10[i] = mean(cv_accuracy_folds10)
+  cv_accuracy50[i] = mean(cv_accuracy_folds50)
+  cv_accuracy100[i] = mean(cv_accuracy_folds100)
+  
+  if(i %% 5 == 0){print(i)}
+}
+```
+
+
+```{r}
+plot_df = data.frame(accuracy = c(cv_accuracy10,
+                                  cv_accuracy50,
+                                  cv_accuracy100),
+                     nFeatures = factor(rep(c(10, 50, 100), each = n_sim)))
+
+ggplot(data = plot_df, aes(x = nFeatures, y = accuracy)) +
+  geom_boxplot() +
+  labs(x = "nFeatures", y = "Mean 5-fold CV accuracy", title = "Distribution of mean 5-fold CV accuracies") +
+  theme(plot.title = element_text(hjust = 0.5, size = 12)) +
+  theme_bw()
+```
+
+Let's now build the model on the full dataset and then test it on our test dataset.
+
+```{r}
+design <- model.matrix(~y)
+fit <- lmFit(t(X), design)
+fit <- eBayes(fit)
+top <- topTable(fit, n = 50)
+```
+
+A key problem with this is the features of our training dataset are not always present in the features of our test dataset. A solution to this problem could be to just check for how many features of the test dataset are present in the features of PROMAD datasets. There's 2 ways of doing this:  
+
+1.    Filter for the PROMAD datasets for rows that are in the test dataset, then filter the test dataset for rows that are also in the PROMAD dataset, and classify.
+
+2.    Filter the top x number of DE genes for DE genes that are in the test dataset, then filter the test dataset for rows that are also in the top x number of DE genes and classify.
+
+Here, we'll go for the 2nd approach, filtering the top 50 DE genes for DE genes that are in the test dataset. 
+
+```{r}
+DE_genes50 <- rownames(top)
+DE_genes_names <- top$ID
+```
+
+
+```{r}
+testSet <- read.csv("Kaggle_Test.csv")
+
+testSet <- testSet |>
+  tibble::column_to_rownames("X")
+
+X_50_intersect <- rownames(testSet)[rownames(testSet) %in% DE_genes50]
+
+testSetFilt <- testSet[rownames(testSet) %in% X_50_intersect,]
+
+X_50 = X[,X_50_intersect]
+
+rf_fit_final = randomForest(x = X_50, y = y)
+
+event = predict(rf_fit_final, t(testSetFilt))
+
+eventdf <- data.frame(ID = names(event),
+                      Outcome = event)
+
+eventdf$Outcome = ifelse(eventdf$Outcome == "AR", 1, 0)
+
+write.csv(eventdf, file = "outcome_labels_example.csv", row.names = FALSE)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
