@@ -1,0 +1,322 @@
+---
+title: "COMBINE X SUDATA X SPDSC X GraftAI Hackathon"
+author: "Alex Qin"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    embed-resources: true
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    code_folding: show
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+
+chooseCRANmirror(graphics=FALSE, ind=1)
+```
+
+Welcome to the bioinformatics stream of the hackathon! In this introductory
+pipeline, we'll cover:
+
+-   Introduction to bulk transcriptomics data
+
+-   A beginners guide to analyzing bulk transcriptomics
+
+-   Visualizing results
+
+This workflow will be directly obtaining and using the data from the 
+[PROMAD](https://shiny.maths.usyd.edu.au/PROMAD/) database, containing
+transplant transcriptomic data from a set of different studies. These
+studies can usually be traced back to their original paper by typing in their
+GSE accession ID (e.g. `GSE46474`) into google. This can be an avenue for 
+analysis of more in-depth questions. 
+
+All data downloaded from PROMAD will be neatly stored as dataframes in a
+`.Rds` format, allowing you to easily read it into R using the `readRDS()`
+function. When downloading multiple datasets, each of these will be stored
+as a dataframe in a list of dataframes.
+
+# Getting started {.tabset .tabset-fade}
+
+## Collecting Data
+
+The first step in analyzing bulk transcriptomics data is to collect the
+data. The `limma` package will be used for the analysis of transcriptomic data.
+Here, we use the `readRDS()` function to read in the file. The file will be 
+stored as a list consisting of 1 dataframe, as we've only specified 1 dataset
+from the PROMAD database.
+
+```{r, message = FALSE, warning = FALSE}
+# Load in the libraries 
+library(limma)
+library(dplyr)
+library(ggplot2)
+
+# Loading in data
+gse <- readRDS("microarray.Rds")
+
+# Loading in the first (and only) dataframe of our list
+gse <- gse[[1]]
+```
+
+## Objects in R
+
+After loading the dataset in as a dataframe, we can inspect it.
+
+```{r, message = FALSE, warning = FALSE}
+# Take a look at the data
+dplyr::glimpse(gse)
+```
+
+We can see that the data consists of 23,521 rows and 42 columns. Each row
+represents a gene (our features) and each column represents a patient (our 
+samples). We can see that this is a balanced dataset, with 20 control patients
+and 19 AR (acute rejection) patients, where the outcome is indicated of the
+patient is indicated by the column name. 
+
+# Microarray {.tabset .tabset-fade}
+
+To be entirely accurate, the dataset that we just loaded in, `GSE46474`, is
+not strictly a RNA sequencing dataset. It is a microarray dataset.
+Microarray technology was the first high-throughput technology used to
+measure gene expression. Microarray data is a bit different from RNAseq
+data, in that it is a array based technology, where the expression of a
+gene is measured by the intensity of a spot on a microarray chip. This
+is in contrast to RNAseq, where the expression of a gene is measured by
+the number of reads that map to that gene.\n
+
+As such the analysis of microarray data is a bit different from RNAseq
+data. In this section, we will cover how to analyse microarray data.
+
+## Introduction
+
+You will notice in our dataframe that we have 2 columns that look likes genes.
+Column `X` and `Gene_Symbol`. You will notice that `X` sometimes has 2 gene 
+names. This is because some probe IDs map to multiple genes because the probe is
+designed to bind to a region of the gene that is common to multiple
+genes. This is a common issue with microarray data. `Gene_Symbol` has simply 
+taken the first element.
+
+```{r}
+head(gse$X)
+head(gse$Gene_Symbol)
+```
+Next, we'll want to remove the `X` column and set `Gene_Symbol` as our rownames.
+However, often times we'll get duplicated or missing gene names in our dataset.
+This can happen for a range of reasons, and you can decide to examine these 
+further, but for the sake of brevity, we'll be simply filtering these genes out. 
+
+```{r}
+gse$X <- NULL
+
+idx = which(!is.na(gse$Gene_Symbol) & !duplicated(gse$Gene_Symbol))
+gse = gse[idx, ]
+
+# Now we can set the gene symbols as the rownames
+rownames(gse) = gse$Gene_Symbol
+
+gse$Gene_Symbol <- NULL
+```
+
+## Normalization & PCA
+
+Normalization is the process of removing technical variation from the
+data. We can first assess whether the data needs to be normalized by
+looking at the distribution of the data. We can do this by plotting a
+boxplot of the data.
+
+```{r}
+boxplot(gse)
+```
+
+As we can see the data is already normalized and so we don't need to
+normalize it once again. All data in PROMAD is already normalized.
+
+Now that we have normalized the data, we can perform a principal componenet analysis (PCA) to visualize the data. PCA is a dimensionality reduction technique that reduces the dimensionality of the data while preserving the variance of the data. We can use the `prcomp` function to perform PCA.
+
+```{r}
+pca = prcomp(t(gse), scale=TRUE, centre = TRUE)
+rejection = grepl("AR", colnames(gse)) # grepl is a function that searches for a pattern in a string
+patient_class = ifelse(rejection, "AR", "Control") # ifelse is a function that assigns a value based on a condition
+pca$x %>%
+  as.data.frame() %>%
+  mutate(patient_class) %>%
+  ggplot(aes(x = PC1, y = PC2, color = patient_class)) + geom_point(size = 5) + theme_bw()
+```
+
+
+## Differential Expression Analysis
+
+In order to identify genes that are differentially expressed between two
+groups, we can use the `limma` package. The `limma` package uses a
+linear model to identify differentially expressed genes. The `limma`
+package takes in a `ExpressionSet` object and a design matrix as input.
+
+To create the design matrix we can use the `model.matrix` function. The
+design matrix is a matrix that describes the experimental design of the
+study. Each column of the design matrix corresponds to a group in the
+study. The `model.matrix` function takes in a formula and a data frame
+as input. The formula describes the experimental design of the study.
+The data frame contains the sample information.
+
+First, we'll need to obtain the class labels from the column names.
+
+```{r}
+# Clean up the class labels
+rejection = grepl("AR", colnames(gse)) # grepl is a function that searches for a pattern in a string
+patient_class = ifelse(rejection, "AR", "Control") # ifelse is a function that assigns a value based on a condition
+
+table(patient_class)
+```
+
+Now that we have the class labels, we can create the design matrix.
+
+```{r}
+# Create the design matrix
+design = model.matrix(~0 + patient_class)
+colnames(design) = c("AR", "Control")
+
+# Fit the linear model
+fit = lmFit(gse, design) # lmFit is a function that fits a linear model to the data
+contrast = makeContrasts(Rejection = AR - Control, levels=design) # makeContrasts is a function that creates a contrast matrix to specify the comparison we want to make in our analysis.
+fit2 = contrasts.fit(fit, contrast) # contrasts.fit is a function that fits the contrast matrix to the linear model
+efit = eBayes(fit2, robust=TRUE) # eBayes is a function that estimates the variance of the data given we have a lot of features.
+```
+
+Finally, we can extract the differentially expressed genes using the
+`topTable` function. This function takes in the `eBayes` object and a
+threshold as input.
+
+```{r}
+topTable = topTable(efit, coef="Rejection", number=Inf)
+
+library(DT)
+topTable %>%
+  round(3) %>%
+  top_n(10, abs(t)) %>%
+  datatable() 
+```
+
+## Enrichment Analysis
+
+Enrichment analysis is the process of identifying biological pathways
+that are enriched with differentially expressed genes. I personally like
+to use the `clusterProfiler` package for enrichment analysis. This
+package takes in a list of genes and a background set of genes as input.
+The package then identifies pathways that are enriched with the list of
+genes. You always seem to see these plots appear in most papers.
+
+```{r, message=FALSE, warning=FALSE}
+# Load in libraries for enrichment analysis
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+```{r, message=FALSE, warning=FALSE}
+# Extract the DE genes from the eBayes object we created earlier
+topTable = topTable(efit, coef="Rejection", number=Inf)
+
+# Extract the top genes
+top_genes <- topTable %>%
+  tibble::rownames_to_column("Genes") %>%
+  dplyr::select("Genes", "t") %>%
+  arrange(desc(t))
+
+# convert top_genes to a named vector. GSEA needs a descending ordered vector of gene names.
+gene_list <- setNames(top_genes$t, top_genes$Genes)
+
+# Perform the enrichment analysis
+gsea <- gseGO(gene_list, OrgDb=org.Hs.eg.db, keyType="SYMBOL", pvalueCutoff=0.05)
+gsea@result %>%
+  dplyr::select("Description", "pvalue", "NES") %>%
+  mutate_if(is.numeric, round, 3) %>%
+  head(n = 30) %>%
+  arrange(pvalue) %>%
+  datatable() 
+```
+
+We now have a list of pathways that are enriched with genes we
+determined significant for allograft rejection. We can plot these
+pathways using a dot plot, where our x-axis is the -log10(pvalue) of
+enrichment and our y-axis is the pathway.
+
+```{r, fig.width=8, fig.height=5}
+# Plot the results
+library(ggplot2)
+gsea@result %>%
+  mutate(Direction = ifelse(NES > 0, "Up-Regulated", "Down-Regulated"),
+         Score = -log10(pvalue)) %>%
+  top_n(20, Score) %>%
+  ggplot(aes(x = Score, y = reorder(Description, Score), color = Direction)) + geom_point() + theme_bw() + 
+  labs(title = "Enrichment Analysis", x = "-log10(pvalue)", y = "Pathway") + facet_wrap(~Direction, scales = "free_y")
+```
+
+# Visualizing Results {.tabset .tabset-fade}
+
+Bioinformatics is a field that is heavily reliant on visualization. In this section, we will cover some common visualizations used in bulk transcriptomics. There are so many different packages to visualize data in R. I have chosen a few that I think are the most useful.
+
+## Heatmaps
+
+Heatmaps are a common visualization used in bulk transcriptomics. Heatmaps are used to visualize the expression of genes across samples. In this section, we will cover how to create heatmaps in R.
+
+```{r}
+library(pheatmap)
+# Create a heatmap
+top20_genes <- topTable %>%
+  arrange(desc(abs(t))) %>%
+  rownames() %>%
+  head(20)
+
+# Extract the counts for the top 20 genes
+sig_counts = gse[top20_genes, ]
+
+# Create the heatmap
+# We can use the pheatmap function to create a heatmap. 
+# First we'll create an annotation matrix that contains the group information for each sample.
+annotation = data.frame(group = patient_class, row.names = colnames(gse))
+pheatmap(sig_counts, 
+         annotation = annotation, 
+         scale = "row", # This scales the rows of the heatmap. Be careful with this as it can make the heatmap look misleading.
+         show_rownames = TRUE, 
+         show_colnames = TRUE)
+```
+
+## Volcano Plots
+
+Volcano plots are a common visualization used in bulk transcriptomics. Volcano plots are used to visualize the significance of genes across samples. In this section, we will cover how to create volcano plots in R.
+
+```{r}
+library(ggplot2)
+# Create a volcano plot
+topTable %>%
+  mutate(Significant = ifelse(P.Value < 0.05 & abs(logFC) > 0.75, 
+                              ifelse(logFC > 0, "Up", "Down"),
+                              "No")) %>%
+  ggplot(aes(x = logFC, y = -log10(P.Value), color = Significant)) + geom_point(alpha = 0.7) + theme_bw() + 
+  labs(title = "Volcano Plot", x = "Log Fold Change", y = "-log10(p-value)") + scale_color_manual(values = c("Up" = "blue", "Down" = "red", "No" = "grey50")) +
+  geom_vline(xintercept = c(-0.75, 0.75), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed")
+```
+
+## MA Plots
+
+M (Log Ratio) A (Average Expression) plots are a common visualization used in bulk transcriptomics. MA plots are used to visualize the relationship between the mean expression of genes and the difference in expression of genes. In this section, we will cover how to create MA plots in R.
+
+```{r}
+# Create a MA plot
+topTable %>%
+  mutate(Significant = ifelse(P.Value < 0.05 & abs(logFC) > 0.75, 
+                              ifelse(logFC > 0, "Up", "Down"),
+                              "No")) %>%
+  ggplot(aes(x = AveExpr, y = logFC, color = Significant)) + geom_point(alpha = 0.7) + theme_bw() + 
+  labs(title = "MA Plot", x = "Log CPM", y = "Log Fold Change") + scale_color_manual(values = c("Up" = "blue", "Down" = "red", "No" = "grey50")) +
+  geom_hline(yintercept = c(-0.75, 0.75), linetype = "dashed")
+```
